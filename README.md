@@ -1,114 +1,127 @@
 # Job Application Optimization System
 
-A pipeline that turns a real CV into tailored, submit-ready applications for remote,
-high-paying engineering roles.
+A pipeline that turns a candidate's CV and project repositories into tailored,
+submit-ready job applications for remote engineering roles.
+
+## Architecture
+
+Four modules communicate through the filesystem — each reads a folder and
+writes a folder, so any module runs standalone. Every folder has an
+`index.md` describing its contents and schema.
 
 ```
-source-of-truth  →  lead-gen  →  output  →  outbound
- CV + project        scrape &     tailored    manual queue
- architecture        rank jobs    package     (no auto-send)
+source-of-truth/   →   lead-gen/        →   output/          →   outbound/
+  profile.json            jobs.jsonl          <employer>/          manifest.csv
+  template.html           companies.yaml        resume.pdf
+  experience/             preferences.yaml     cover-letter.md
+  projects/                                     post.md
+  writing-samples/                              answers.json
+  index/ (BM25)
 ```
 
-Four modules, communicating through the filesystem. Each has an `index.md` explaining
-its contents, schema, and design decisions — start there.
+| Module | Responsibility |
+| --- | --- |
+| `source-of-truth/` | Canonical candidate record: structured profile, experience, project architecture docs, writing samples, and a BM25 retrieval index. |
+| `lead-gen/` | Scrapes job listings from board APIs (Greenhouse, Lever, Remotive, Arbeitnow) and optionally EXA and Apify; disqualifies, deduplicates, ranks, and keeps the top jobs. |
+| `output/` | Generates a tailored application package per job: one-page resume PDF, cover letter, outreach post, study plan, and pre-drafted application answers. |
+| `outbound/` | A manual CSV queue of generated packages. No automated sending. |
+
+**Data contracts** flow between modules as versioned types:
+`Profile` · `Job` · `MatchScore` · `ApplicationPackage` · `SendRecord`.
+
+**Design constraints**
+
+- File-based, inspectable state — no hidden databases.
+- LLM and scraping providers sit behind interfaces (`LLMClient`,
+  `LeadSource`); no vendor calls inline in module logic.
+- Candidate data is never sent to a provider not explicitly configured.
+- Human-in-the-loop on anything leaving the machine.
 
 ## Quick start
 
+Requires Python ≥ 3.10 and [`uv`](https://docs.astral.sh/uv/).
+
 ```bash
 uv sync
-cp .env.example .env        # add ANTHROPIC_API_KEY
-
-uv run jobapp ingest        # build source-of-truth from the CV + repos
-uv run jobapp scrape        # fetch and rank ~100 jobs
-uv run jobapp generate -n 10  # tailor packages for the top 10
-uv run jobapp status
+cp .env.example .env        # add SILICONFLOW_API_KEY
 ```
 
-`ingest --no-llm` parses the CV and builds the index without any API calls, which is
-useful for checking the parse in isolation.
+Run the pipeline:
 
-## What each stage does
+```bash
+uv run jobapp ingest          # build source-of-truth from the CV + repos
+uv run jobapp scrape          # fetch and rank jobs into lead-gen/jobs.jsonl
+uv run jobapp generate -n 10  # tailor packages for the top 10 matches
+uv run jobapp status          # report what currently exists on disk
+```
 
-**`ingest`** parses `~/Public/Documents/me/one-ppager/Allan_Kariuki_CV_Absa_Bedrock.html`
-with BeautifulSoup into `profile.json`, copies it as the render template, splits roles
-into per-role markdown, imports blog posts as voice references, derives architecture
-docs for six real projects from their code, audits the CV, and builds a BM25 index.
+`ingest --no-llm` parses the CV and builds the index without any API calls.
+`jobapp run -n 10` runs `scrape` and `generate` in sequence.
 
-**`scrape`** pulls from Greenhouse and Lever board APIs, Remotive, Arbeitnow, and
-optionally EXA and Apify; disqualifies non-remote and out-of-scope roles; deduplicates
-across sources; ranks by pay signal; keeps the top 100.
+A web UI is also available:
 
-**`generate`** runs in two phases: it scores a wide pool of jobs through a recruiter
-persona (one cheap call each), then builds full packages only for the best matches (six
-calls each) — a tailored one-page resume PDF, cover letter, outreach post, study plan,
-pre-drafted application answers, and the posting itself, one folder per job.
+```bash
+uv run jobapp web             # http://localhost:8000
+```
 
-The two phases exist because of something that only became obvious when the pipeline
-first ran end to end: **the queue is ranked by pay, and the highest-paying jobs are also
-the hardest to get.** Taking the top N by pay meant generating packages for the roles
-least likely to convert — the first real run scored all six at 4–22 out of 100, because
-the top of the queue was Anthropic Research Engineer and Red Team roles. Score widely,
-spend the expensive calls narrowly.
+## Commands
 
-**`outbound`** is a CSV queue you work through by hand. See `outbound/index.md`.
+| Command | Description |
+| --- | --- |
+| `jobapp ingest` | Parse the CV into `profile.json`, derive project docs, audit the CV, build the BM25 index. |
+| `jobapp scrape` | Fetch jobs from configured sources, filter and rank, keep the best. |
+| `jobapp generate` | Score a pool of jobs through a recruiter persona, then build packages for the best matches. |
+| `jobapp run` | `scrape` + `generate`. |
+| `jobapp status` | Print the current state of every module. |
+| `jobapp web` | Serve the web UI. |
 
-## Design decisions worth knowing
+Key `generate` options:
 
-**A tailored resume can never misstate your history.** The model returns a
-`TailoredResume` containing summary, highlights, skill ordering, and bullets — and
-deliberately *no* fields for employer, job title, or dates. Those are copied from
-`profile.json` directly into the template, so there is no channel through which the
-model can alter them. Rendering is a surgical DOM edit of your real hand-tuned CV; the
-CSS is never touched.
+- `--limit / -n` — number of packages to build (default 10).
+- `--pool` — number of jobs to score first (default 5× limit). Scoring is one
+  cheap LLM call; building a package is six.
+- `--persona` — reviewer persona used for matching (default
+  `senior-tech-recruiter`).
+- `--threshold` — minimum match score required to build a package.
 
-**The one-page constraint is measured, not assumed.** Every resume is rendered and its
-page count read with `pdfinfo`. Two pages triggers one shorter retry, then deterministic
-trimming. A silently two-page CV is worse than an untailored one, because the layout was
-designed as a one-pager.
+## Project structure
 
-**Pay is a ranking signal, not a filter.** Most postings omit compensation, so a hard
-salary floor would discard most of the market. Stated salaries are parsed and normalised
-to USD; when absent, a proxy score uses title seniority, whether the company pays at
-global rates, and remote scope. Every job records which signals fired in `pay_rationale`.
+```
+src/
+  cli.py        Typer entry point — the jobapp commands
+  config.py     Paths, secrets exclusion, scrubbing
+  contracts.py  Pydantic data contracts
+  extract.py    CV parsing, project doc derivation, CV audit
+  retrieve.py   BM25 index build/load
+  sources.py    LeadSource implementations (board APIs, EXA, Apify)
+  rank.py       Filtering, deduplication, pay ranking
+  generate.py   Match scoring and package generation
+  llm.py        LLMClient protocol + SiliconFlow implementation
+  web.py        FastAPI web UI
+tests/          69 tests, no API key or network required
+```
 
-**Retrieval is BM25, not embeddings.** The corpus is one CV and six project docs.
-Anthropic has no embeddings endpoint, so vectors would mean a second provider for a
-corpus that fits in one cached prompt prefix. See `source-of-truth/index.md`.
+## Configuration
 
-**Prompt caching is load-bearing, and needs two things to actually work.** The profile
-sits in its own cached system segment while per-job project evidence goes in a later
-segment and the posting goes in the user turn — caching is a prefix match, so a single
-concatenated block ending in per-job content caches nothing at all. And the first
-scoring call runs *alone*: a cache entry is only readable once the first response has
-started streaming, so firing N identical-prefix requests concurrently means all N miss.
-`generate` warns if it sees zero cache reads.
-
-**Project architecture is derived from code, not from READMEs.** Only one of the six
-repos documents its own architecture; the rest have `create-next-app` boilerplate. So
-evidence is gathered mechanically — dependencies, Prisma schemas, route trees,
-Dockerfiles, env var *names* — and each doc records the files its claims came from.
+- `.env` — API keys. `SILICONFLOW_API_KEY` is required; `EXA_API_KEY` and
+  `APIFY_TOKEN` enable optional sources. A missing optional key disables that
+  source with a warning rather than failing the run.
+- `lead-gen/companies.yaml` — the ATS board tokens to scrape.
+- `lead-gen/preferences.yaml` — salary floor, remote requirements, title
+  filters.
 
 ## Safety
 
-This repository is public, and the source data is not. Two mechanisms:
+The repository is public; the source data is not. Two mechanisms keep
+credentials and personal data out of the corpus and out of prompts:
 
-- **Exclusion list** (`config.is_excluded`) — `me/iso/` (a password export), `me/rihash/`,
-  MPESA statements, `.env` files, keys and certificates are never read or indexed.
-  Credentials live in the same directory tree as the CV; an unfiltered indexer would pull
-  them into the corpus, then into prompts.
-- **`config.scrub`** redacts anything key-shaped from generated text before it is written,
-  and reports when it fires rather than redacting silently.
+- `config.is_excluded` — never reads or indexes credentials, key files, or
+  `.env` files that live alongside the CV.
+- `config.scrub` — redacts secret-shaped strings from generated text before
+  it is written, and reports when it fires.
 
-Env var *names* are recorded as architecture evidence ("this service talks to Stripe").
-Values are never read. `.gitignore` excludes all generated personal data — the pipeline
-rebuilds it from source.
-
-## Provider swapping
-
-`llm.py` defines an `LLMClient` protocol; nothing downstream imports Anthropic directly.
-`AnthropicClient` is implemented and `MistralClient` raises `NotImplementedError` — the
-seam is real, but pretending it were finished would be worse than leaving it obviously
-unfinished.
+`.gitignore` excludes all generated personal data — the pipeline rebuilds it
+from source.
 
 ## Tests
 
@@ -116,14 +129,6 @@ unfinished.
 uv run pytest
 ```
 
-69 tests, no API key or network required. They cover date auditing, salary parsing,
-remote classification, disqualification, pay ranking, deduplication, BM25 retrieval, and
-the render path — including the guarantee that tailoring cannot alter an employer name or
-a date.
-
-## Tuning
-
-`lead-gen/companies.yaml` is the highest-leverage file in the repo: it decides which
-companies you apply to at all. Every token there was verified live against the board API.
-`lead-gen/preferences.yaml` holds the salary floor, remote requirements, and title
-filters.
+69 tests, no API key or network required. They cover date auditing, salary
+parsing, remote classification, disqualification, pay ranking, deduplication,
+BM25 retrieval, and the render path.
