@@ -462,3 +462,17 @@ input:focus, select:focus {
 .timeline-org { color: var(--text-secondary); font-size: 14px; }
 .timeline-period { font-size: 13px; color: var(--text-secondary); }
 .timeline-bullets { margin: 6px 0 0 16px; font-size: 14px; color: var(--text-secondary); }
+
+/* --- Apply panel --- */
+
+.apply-field.needs-input {
+    border-left: 3px solid var(--red);
+    padding-left: 14px;
+    margin-left: -14px;
+}
+
+.apply-input:focus {
+    outline: none;
+    border-color: var(--accent) !important;
+    box-shadow: 0 0 0 3px rgba(0,113,227,0.15);
+}

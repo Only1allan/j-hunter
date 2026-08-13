@@ -254,6 +254,73 @@ def api_outbound():
     return {"rows": rows}
 
 
+# --- API: Auto-apply with human-in-the-loop ----------------------------------
+
+
+@app.post("/api/outbound/{slug}/prepare")
+def api_prepare_application(slug: str):
+    """Prepare an application: fetch form questions, merge with pre-drafted answers."""
+    from . import apply as ap
+    from . import generate as gen
+
+    pkg_dir = config.OUTPUT / slug
+    if not pkg_dir.is_dir():
+        raise HTTPException(404, f"package '{slug}' not found")
+
+    pkg_path = pkg_dir / "package.json"
+    if not pkg_path.exists():
+        raise HTTPException(404, f"package.json not found in '{slug}'")
+
+    pkg = json.loads(pkg_path.read_text(encoding="utf-8"))
+    job = pkg.get("job", {})
+    profile = gen.load_profile()
+
+    import asyncio
+    prepared = asyncio.run(ap.prepare_application(job, profile.model_dump(), pkg_dir))
+    return prepared.to_dict()
+
+
+@app.post("/api/outbound/{slug}/submit")
+def api_submit_application(slug: str, body: dict | None = None):
+    """Log a submission to sent.jsonl and update the manifest."""
+    from . import apply as ap
+
+    pkg_dir = config.OUTPUT / slug
+    if not pkg_dir.is_dir():
+        raise HTTPException(404, f"package '{slug}' not found")
+
+    pkg_path = pkg_dir / "package.json"
+    if not pkg_path.exists():
+        raise HTTPException(404, f"package.json not found in '{slug}'")
+
+    pkg = json.loads(pkg_path.read_text(encoding="utf-8"))
+    job = pkg.get("job", {})
+
+    body = body or {}
+    method = body.get("method", "manual")
+    result = body.get("result", "submitted")
+    fields = body.get("fields", {})
+    notes = body.get("notes", [])
+
+    entry = ap.log_submission(
+        slug=slug,
+        company=job.get("company", ""),
+        role=job.get("title", ""),
+        method=method,
+        result=result,
+        fields=fields,
+        notes=notes,
+    )
+    return entry
+
+
+@app.get("/api/outbound/sent")
+def api_sent_log():
+    """Return the submission log."""
+    from . import apply as ap
+    return {"entries": ap.get_sent_log()}
+
+
 # --- API: Run pipeline stages -----------------------------------------------
 # Runs `jobapp <stage>` as a subprocess so it gets its own event loop.
 

@@ -105,13 +105,20 @@ class SiliconFlowClient:
             "Content-Type": "application/json",
         }
         self.usage = Usage()
-        self._sem = asyncio.Semaphore(config.MAX_CONCURRENCY)
+        self._sem = None
+        self._sem_loop = None
 
     async def _chat(
         self, *, stable_system: str | list[str], user: str,
         max_tokens: int, json_schema: dict | None = None,
     ) -> dict:
         """POST /chat/completions. Returns the parsed JSON response."""
+        # Semaphore must be bound to the running event loop — recreating it
+        # when asyncio.run() is called multiple times (scoring then building).
+        loop = asyncio.get_running_loop()
+        if self._sem is None or self._sem_loop is not loop:
+            self._sem = asyncio.Semaphore(config.MAX_CONCURRENCY)
+            self._sem_loop = loop
         if isinstance(stable_system, list):
             system = "\n\n".join(s for s in stable_system if s)
         else:

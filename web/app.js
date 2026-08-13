@@ -397,7 +397,10 @@ async function renderOutbound() {
     navHighlight('outbound');
     content().innerHTML = '<div class="loading">Loading…</div>';
     try {
-        const data = await fetchJSON('/api/outbound');
+        const [data, sent] = await Promise.all([
+            fetchJSON('/api/outbound'),
+            fetchJSON('/api/outbound/sent'),
+        ]);
         if (!data.rows.length) {
             content().innerHTML = `<h1 class="section-title">Outbound</h1><div class="card"><p style="color:var(--text-secondary)">Queue is empty. Run <code>jobapp generate</code> to populate it.</p></div>`;
             return;
@@ -407,24 +410,142 @@ async function renderOutbound() {
             <div class="card" style="padding:0;overflow:hidden">
                 <table>
                     <thead><tr>
-                        <th>Company</th><th>Role</th><th>Score</th><th>Pay</th><th>Salary</th><th>Remote</th><th>Pages</th><th>Applied</th>
+                        <th>Company</th><th>Role</th><th>Match</th><th>Pay</th><th>Salary</th><th>Remote</th><th>Applied</th><th>Action</th>
                     </tr></thead>
                     <tbody>
-                        ${data.rows.map(r => `<tr>
-                            <td><strong>${esc(r.company)}</strong></td>
-                            <td>${esc(r.role)}</td>
-                            <td>${esc(r.match_score)}</td>
-                            <td>${esc(r.pay_score)}</td>
-                            <td>${r.salary_usd_est ? '$' + esc(r.salary_usd_est) : '—'}</td>
-                            <td>${esc(r.remote_scope)}</td>
-                            <td>${esc(r.resume_pages)}</td>
-                            <td>${r.applied_on ? esc(r.applied_on) : '—'}</td>
-                        </tr>`).join('')}
+                        ${data.rows.map(r => {
+                            const slug = (r.package_dir || '').replace('output/', '');
+                            const applied = r.applied_on
+                                ? `<span class="badge badge-low">${esc(r.applied_on)}</span>`
+                                : '—';
+                            return `<tr>
+                                <td><strong>${esc(r.company)}</strong></td>
+                                <td>${esc(r.role)}</td>
+                                <td><span class="score-badge ${scoreClass(parseInt(r.match_score)||0)}" style="width:32px;height:32px;font-size:13px">${esc(r.match_score)}</span></td>
+                                <td>${esc(r.pay_score)}</td>
+                                <td>${r.salary_usd_est ? '$' + esc(r.salary_usd_est) : '—'}</td>
+                                <td>${esc(r.remote_scope)}</td>
+                                <td>${applied}</td>
+                                <td><button class="btn btn-sm" onclick="renderApplyPanel('${esc(slug)}')">Apply</button></td>
+                            </tr>`;
+                        }).join('')}
                     </tbody>
                 </table>
             </div>
+            ${sent.entries?.length ? `
+            <h2 style="font-size:20px;font-weight:700;margin:32px 0 16px;letter-spacing:-0.3px">Sent Applications (${sent.entries.length})</h2>
+            <div class="card" style="padding:0;overflow:hidden">
+                <table>
+                    <thead><tr><th>Company</th><th>Role</th><th>Method</th><th>Result</th><th>Date</th></tr></thead>
+                    <tbody>
+                        ${sent.entries.map(e => `<tr>
+                            <td><strong>${esc(e.company)}</strong></td>
+                            <td>${esc(e.role)}</td>
+                            <td>${esc(e.method)}</td>
+                            <td><span class="badge ${e.result === 'submitted' ? 'badge-low' : 'badge-medium'}">${esc(e.result)}</span></td>
+                            <td>${esc((e.applied_at||'').slice(0,10))}</td>
+                        </tr>`).join('')}
+                    </tbody>
+                </table>
+            </div>` : ''}
         `;
     } catch (e) { content().innerHTML = `<div class="error">${esc(e.message)}</div>`; }
+}
+
+// --- Apply panel (human-in-the-loop) ---
+
+async function renderApplyPanel(slug) {
+    navHighlight('outbound');
+    content().innerHTML = '<div class="loading">Preparing application…</div>';
+    try {
+        const resp = await fetch(`/api/outbound/${slug}/prepare`, { method: 'POST' });
+        if (!resp.ok) throw new Error(`Prepare failed: ${resp.status}`);
+        const app = await resp.json();
+        const fields = app.fields || [];
+        const review = app.needs_review;
+
+        content().innerHTML = `
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
+                <h1 class="section-title" style="margin:0">Apply: ${esc(app.company)}</h1>
+                <a href="#/outbound" class="btn btn-sm btn-secondary">← Back</a>
+            </div>
+            <div class="card">
+                <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center">
+                    <div>
+                        <div style="font-weight:600;font-size:17px">${esc(app.role)}</div>
+                        <div style="color:var(--text-secondary);font-size:14px;margin-top:2px">
+                            Board: ${esc(app.board)} ·
+                            ${review
+                                ? '<span style="color:var(--orange)">⚠ Fields need your review</span>'
+                                : '<span style="color:var(--green)">✓ Ready to submit</span>'}
+                        </div>
+                    </div>
+                    <div style="display:flex;gap:8px;margin-left:auto">
+                        <a href="${esc(app.apply_url)}" target="_blank" class="btn btn-sm">Open Page ↗</a>
+                        <a href="${esc(app.resume_url)}" target="_blank" class="btn btn-sm btn-secondary">Resume</a>
+                        <a href="${esc(app.cover_letter_url)}" target="_blank" class="btn btn-sm btn-secondary">Cover Letter</a>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card" style="margin-top:16px">
+                <div class="card-title">Application Fields</div>
+                <p style="color:var(--text-secondary);font-size:14px;margin:4px 0 16px">
+                    ${review
+                        ? 'Fields in red need your input. Edit any field, then open the application page and submit.'
+                        : 'All fields pre-filled. Review, then open the application page and submit.'}
+                </p>
+                <div id="apply-fields">
+                ${fields.map((f, i) => `
+                    <div class="apply-field ${f.needs_input ? 'needs-input' : ''}" style="margin-bottom:16px">
+                        <label style="font-weight:600;font-size:14px;display:block;margin-bottom:6px">
+                            ${esc(f.question)}
+                            ${f.needs_input ? '<span class="badge badge-high" style="margin-left:8px">NEEDS INPUT</span>' : ''}
+                            ${f.type === 'file' ? '<span class="badge badge-low" style="margin-left:8px">FILE</span>' : ''}
+                        </label>
+                        ${f.type === 'select' && f.options?.length ? `
+                            <select class="apply-input" data-field="${i}" style="width:100%">
+                                ${f.options.map(o => `<option value="${esc(o)}" ${o === f.answer ? 'selected' : ''}>${esc(o)}</option>`).join('')}
+                            </select>
+                        ` : f.type === 'file' ? `
+                            <div style="padding:10px 14px;background:var(--bg);border-radius:var(--radius-sm);color:var(--text-secondary);font-size:14px">
+                                Upload manually — use the Resume / Cover Letter links above.
+                            </div>
+                        ` : `
+                            <textarea class="apply-input" data-field="${i}" rows="${(f.answer||'').length > 200 ? 6 : 3}"
+                                style="width:100%;font-family:inherit;font-size:14px;resize:vertical;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-elevated);color:var(--text);padding:8px 12px"
+                            >${esc(f.answer)}</textarea>
+                        `}
+                    </div>
+                `).join('')}
+                </div>
+            </div>
+
+            <div style="display:flex;gap:12px;margin-top:20px;flex-wrap:wrap">
+                <a href="${esc(app.apply_url)}" target="_blank" class="btn">Open Application Page ↗</a>
+                <button class="btn" onclick="submitApplication('${esc(slug)}')">Mark as Applied</button>
+                <a href="#/outbound" class="btn btn-secondary">Cancel</a>
+            </div>
+        `;
+    } catch (e) { content().innerHTML = `<div class="error">${esc(e.message)}</div>`; }
+}
+
+async function submitApplication(slug) {
+    const fields = {};
+    document.querySelectorAll('.apply-input').forEach(el => {
+        fields[el.dataset.field] = el.value;
+    });
+    try {
+        const resp = await fetch(`/api/outbound/${slug}/submit`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ method: 'manual', result: 'submitted', fields }),
+        });
+        if (!resp.ok) throw new Error(`${resp.status}`);
+        location.hash = '#/outbound';
+    } catch (e) {
+        alert('Submit failed: ' + e.message);
+    }
 }
 
 // --- Audit ---
@@ -511,7 +632,7 @@ function router() {
     else if (parts[0] === 'profile') renderProfile();
     else if (parts[0] === 'jobs') renderJobs();
     else if (parts[0] === 'packages') parts.length > 1 ? renderPackageDetail(parts[1]) : renderPackages();
-    else if (parts[0] === 'outbound') renderOutbound();
+    else if (parts[0] === 'outbound') parts.length > 2 && parts[1] === 'apply' ? renderApplyPanel(parts[2]) : renderOutbound();
     else if (parts[0] === 'audit') renderAudit();
     else renderDashboard();
 }
