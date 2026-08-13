@@ -1,0 +1,63 @@
+# Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Virtual environments & Python cache
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+
+# UV
+uv.lock
+
+# Session logs & temp
+session.md
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node (if frontend grows)
+node_modules/
+
+# Generated personal data — the pipeline rebuilds all of it from source.
+# Publishing a real CV, address, and phone number is not the goal.
+source-of-truth/profile.json
+source-of-truth/template.html
+source-of-truth/experience/
+source-of-truth/projects/
+source-of-truth/writing-samples/
+source-of-truth/index/
+source-of-truth/cv-audit.json
+
+# Scraped job data and generated applications
+lead-gen/jobs.jsonl
+output/*/
+outbound/manifest.csv
+
+# Keep the folder structure and docs visible even though contents are ignored
+!source-of-truth/index.md
+!source-of-truth/personas/
+!lead-gen/index.md
+!lead-gen/preferences.yaml
+!lead-gen/companies.yaml
+!output/index.md
+!outbound/index.md

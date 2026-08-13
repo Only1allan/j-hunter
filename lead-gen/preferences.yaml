@@ -1,0 +1,84 @@
+# What lead-gen looks for. Hand-edited; nothing writes to this file.
+# Consumed as `Preferences` in contracts.py.
+
+salary:
+  floor_usd: 80000
+  currency_pref: [USD, EUR, GBP]
+  # Most postings don't state pay. Keep this false so unstated-salary jobs are
+  # RANKED by proxy signals rather than discarded — a hard filter here throws
+  # away the majority of the market. See rank.py.
+  require_explicit: false
+
+remote:
+  required: true
+  # Matched against the posting's location/region text.
+  accept:
+    - worldwide
+    - global
+    - anywhere
+    - remote
+    - emea
+    - africa
+    - kenya
+    - europe
+  # Hard disqualifiers. "us-only" style restrictions are the common trap:
+  # a listing says "Remote" in the title and "must reside in the US" in the body.
+  reject:
+    - us only
+    - us-only
+    - united states only
+    - us citizens
+    - must be located in the us
+    - work authorization required
+    - hybrid
+    - on-site
+    - onsite
+    - in-office
+
+titles:
+  - software engineer
+  - senior software engineer
+  - full stack engineer
+  - backend engineer
+  - platform engineer
+  - cloud engineer
+  - solutions architect
+  - cloud architect
+  - devops engineer
+  - site reliability engineer
+  - ai engineer
+  - machine learning engineer
+  - forward deployed engineer
+
+seniority_min: mid
+
+exclude:
+  - intern
+  - internship
+  - junior
+  - graduate
+  - trainee
+  - apprentice
+  - unpaid
+  - commission only
+  - equity only
+  - volunteer
+  - staffing agency
+  # Non-engineering roles that contain the word "engineer" and would otherwise
+  # pass the title filter. "Sales Engineer" is a quota-carrying sales job, not a
+  # software one — these were genuinely getting through before being excluded.
+  - sales engineer
+  - solutions engineer
+  - sales
+  - account executive
+  - account manager
+  - customer success
+  - recruiter
+  - recruiting
+  - talent
+  - marketing
+  - support engineer
+  - technical support
+  - field engineer
+
+target_count: 100
