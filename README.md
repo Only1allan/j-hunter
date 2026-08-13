@@ -12,7 +12,7 @@ writes a folder, so any module runs standalone. Every folder has an
 ```
 source-of-truth/   →   lead-gen/        →   output/          →   outbound/
   profile.json            jobs.jsonl          <employer>/          manifest.csv
-  template.html           companies.yaml        resume.pdf
+  template.html           companies.yaml        resume.pdf         sent.jsonl
   experience/             preferences.yaml     cover-letter.md
   projects/                                     post.md
   writing-samples/                              answers.json
@@ -24,7 +24,7 @@ source-of-truth/   →   lead-gen/        →   output/          →   outbound/
 | `source-of-truth/` | Canonical candidate record: structured profile, experience, project architecture docs, writing samples, and a BM25 retrieval index. |
 | `lead-gen/` | Scrapes job listings from board APIs (Greenhouse, Lever, Remotive, Arbeitnow) and optionally EXA and Apify; disqualifies, deduplicates, ranks, and keeps the top jobs. |
 | `output/` | Generates a tailored application package per job: one-page resume PDF, cover letter, outreach post, study plan, and pre-drafted application answers. |
-| `outbound/` | A manual CSV queue of generated packages. No automated sending. |
+| `outbound/` | A queue of generated packages with an auto-apply workflow: prepares form answers, surfaces fields the AI can't answer for human review, logs submissions to `sent.jsonl`. |
 
 **Data contracts** flow between modules as versioned types:
 `Profile` · `Job` · `MatchScore` · `ApplicationPackage` · `SendRecord`.
@@ -73,7 +73,7 @@ uv run jobapp web             # http://localhost:8000
 | `jobapp generate` | Score a pool of jobs through a recruiter persona, then build packages for the best matches. |
 | `jobapp run` | `scrape` + `generate`. |
 | `jobapp status` | Print the current state of every module. |
-| `jobapp web` | Serve the web UI. |
+| `jobapp web` | Serve the web UI with dashboard, profile, jobs, packages, outbound, and auto-apply. |
 
 Key `generate` options:
 
@@ -96,10 +96,34 @@ src/
   sources.py    LeadSource implementations (board APIs, EXA, Apify)
   rank.py       Filtering, deduplication, pay ranking
   generate.py   Match scoring and package generation
+  apply.py      Auto-apply: form preparation, board API integration, submission logging
   llm.py        LLMClient protocol + SiliconFlow implementation
   web.py        FastAPI web UI
-tests/          69 tests, no API key or network required
+tests/          86 tests, no API key or network required
 ```
+
+## Auto-apply with human-in-the-loop
+
+The outbound page in the web UI implements the escalation rule from the
+architecture: **the AI prepares the application, but a human reviews and
+confirms before anything is submitted.**
+
+1. **Prepare** — for each job in the queue, the system loads the pre-drafted
+   answers from `answers.md`, fills standard fields (name, email, location)
+   from the profile, and for Greenhouse/Lever boards fetches the actual
+   application form questions via the board's public API.
+2. **Review** — a panel shows every field in an editable text area. Fields
+   the AI could not answer are flagged with a red **NEEDS INPUT** badge — the
+   system never guesses. The user reviews, edits, and downloads the resume
+   and cover letter PDFs.
+3. **Submit** — the user opens the application page, pastes the prepared
+   answers, and clicks **Mark as Applied**. The submission is logged to
+   `outbound/sent.jsonl` and the date is recorded in `manifest.csv`.
+4. **Track** — a **Sent Applications** table below the queue shows submission
+   history with method, result, and date.
+
+For boards without an API (Remotive, Arbeitnow), the system falls back to the
+pre-drafted answers and opens the apply URL for manual submission.
 
 ## Configuration
 
@@ -129,6 +153,6 @@ from source.
 uv run pytest
 ```
 
-69 tests, no API key or network required. They cover date auditing, salary
+86 tests, no API key or network required. They cover date auditing, salary
 parsing, remote classification, disqualification, pay ranking, deduplication,
-BM25 retrieval, and the render path.
+BM25 retrieval, JSON extraction, and the render path.
