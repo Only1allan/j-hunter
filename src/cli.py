@@ -152,19 +152,40 @@ def ingest(
 def scrape(
     source: list[str] = typer.Option(
         None, "--source", "-s",
-        help="Limit to these sources. Repeatable. 'apify' must be requested explicitly.",
+        help="Limit to these sources. Repeatable. Kenyan crawlers (fuzu, "
+             "myjobmag, brightermonday) and 'apify' are off by default and must "
+             "be requested explicitly.",
     ),
     verify_boards: bool = typer.Option(
         False, "--verify-boards", help="Report which ATS board tokens resolved."
     ),
 ):
     """Fetch jobs from every configured source, rank them, keep the best."""
+    _scrape(source=source, verify_boards=verify_boards)
+
+
+def _scrape(source: list[str] | None = None, verify_boards: bool = False) -> None:
+    """The actual implementation, with real Python defaults.
+
+    Kept separate from the typer command because calling a command function
+    directly (as `run` does) leaves any omitted parameter bound to a typer
+    `OptionInfo` sentinel rather than its default value. `OptionInfo` is truthy
+    and is not an int, so it survives an `or` and then explodes at first use.
+    """
     from . import rank
     from . import sources
 
     prefs = _load_prefs()
     companies = yaml.safe_load(config.COMPANIES_YAML.read_text()) or {}
     enabled = set(source) if source else None
+
+    if enabled:
+        unknown = enabled - sources.ALL_SOURCES
+        if unknown:
+            raise typer.BadParameter(
+                f"unknown source(s): {', '.join(sorted(unknown))}. "
+                f"Available: {', '.join(sorted(sources.ALL_SOURCES))}"
+            )
 
     console.print("[bold]Fetching[/bold]")
     srcs = sources.build_sources(companies, enabled=enabled, titles=prefs.titles)
@@ -232,6 +253,16 @@ def generate(
     for the roles you are least likely to land. So score widely first, then spend
     the expensive generation calls on the jobs that actually scored well.
     """
+    _generate(limit=limit, pool=pool, persona=persona, threshold=threshold)
+
+
+def _generate(
+    limit: int = 10,
+    pool: int = 0,
+    persona: str = "senior-tech-recruiter",
+    threshold: int = config.MATCH_THRESHOLD,
+) -> None:
+    """The actual implementation. See `_scrape` for why this is split out."""
     from . import generate as gen
     from . import retrieve
     from .llm import get_client
@@ -282,10 +313,25 @@ def generate(
 
     console.print(f"[bold]Building {len(eligible)} package(s)[/bold]")
 
+    # Contacts and languages, so the outreach email knows who it is addressing and
+    # the contribution finder knows which repos are relevant. Both are optional —
+    # a package still builds without either.
+    from . import contribute
+    from . import enrich as en
+    from .rank import normalize_company
+
+    employers = {e.slug: e for e in en.read_employers()}
+    languages = contribute.languages_from_profile(profile)
+    if employers:
+        console.print(f"[dim]{len(employers)} enriched employer(s) available for "
+                      f"outreach addressing")
+
     async def build_all():
         return await asyncio.gather(
             *(gen.build_package(client, job, match, projects_text, profile,
-                                template_html, voice, threshold=threshold)
+                                template_html, voice, threshold=threshold,
+                                employer=employers.get(normalize_company(job.company)),
+                                languages=languages)
               for job, match, projects_text in eligible),
             return_exceptions=True,
         )
@@ -321,11 +367,348 @@ def generate(
     console.print(f"[dim]{client.usage.report()}")
 
 
+@app.command("discover-boards")
+def discover_boards(
+    seed: Path = typer.Option(
+        None, "--seed", help="YAML/text file of company names. Defaults to "
+                             "lead-gen/seed-companies.yaml.",
+    ),
+    company: list[str] = typer.Option(
+        None, "--company", "-c", help="Probe a single company name. Repeatable."
+    ),
+    write: bool = typer.Option(
+        False, "--write", help="Merge discovered tokens into companies.yaml."
+    ),
+    ats: list[str] = typer.Option(
+        None, "--ats", help="Limit the probe to these ATS platforms."
+    ),
+):
+    """Find which ATS each employer publishes on, and verify the board is live.
+
+    Company names go in, verified board tokens come out. Nothing is guessed:
+    every reported token returned a real posting count from a live board.
+    """
+    from . import discover as disc
+    from .sources import ATS_SOURCES
+
+    names = list(company or [])
+    if not names:
+        path = seed or disc.SEED_PATH
+        if not path.exists():
+            raise typer.BadParameter(f"no seed file at {path}")
+        names = disc.load_seed(path)
+
+    ats_names = [a for a in (ats or []) if a in ATS_SOURCES] or list(ATS_SOURCES)
+    console.print(
+        f"[bold]Probing {len(names)} companies[/bold] across {len(ats_names)} ATS "
+        f"platforms ({', '.join(ats_names)})"
+    )
+
+    hits = asyncio.run(disc.discover(names, ats_names))
+    hits.sort(key=lambda h: (-h.postings, h.company.lower()))
+
+    table = Table("company", "ats", "token", "postings", box=None)
+    for hit in hits:
+        table.add_row(hit.company, hit.ats, hit.token, str(hit.postings))
+    console.print(table)
+
+    found = {h.company for h in hits}
+    missing = [n for n in names if n not in found]
+    console.print(
+        f"[green]{len(hits)} board(s) found[/green] carrying "
+        f"{sum(h.postings for h in hits):,} postings; "
+        f"{len(missing)} company(ies) had no reachable public board"
+    )
+    if missing:
+        console.print(f"[dim]no board: {', '.join(missing[:20])}"
+                      + (" ..." if len(missing) > 20 else ""))
+
+    from collections import Counter
+
+    spread = Counter(h.ats for h in hits)
+    console.print("[dim]by ATS: " + ", ".join(f"{a} {n}" for a, n in spread.most_common()))
+
+    if write:
+        existing = yaml.safe_load(config.COMPANIES_YAML.read_text()) or {}
+        merged = disc.merge_into_companies(hits, existing)
+        header = (
+            "# Target companies, keyed by the ATS hosting their public job board.\n"
+            "#\n"
+            "# Maintained by `jobapp discover-boards --write`, which probes every\n"
+            "# supported ATS for each name in seed-companies.yaml and keeps only the\n"
+            "# boards that actually answered. Hand edits are preserved on merge.\n"
+            "#\n"
+            "# Curating this list is the highest-leverage tuning in the pipeline: it\n"
+            "# decides which companies you apply to at all.\n\n"
+        )
+        config.COMPANIES_YAML.write_text(
+            header + yaml.safe_dump(merged, sort_keys=True, default_flow_style=False),
+            encoding="utf-8",
+        )
+        total = sum(len(v) for v in merged.values())
+        console.print(f"[green]wrote[/green] {total} token(s) to "
+                      f"{config.COMPANIES_YAML.relative_to(config.ROOT)}")
+    else:
+        console.print("[dim]re-run with --write to merge these into companies.yaml")
+
+
+@app.command()
+def enrich(
+    limit: int = typer.Option(40, "--limit", "-n", help="How many employers."),
+    no_guess: bool = typer.Option(
+        False, "--no-guess",
+        help="Only report addresses actually observed on the employer's site.",
+    ),
+):
+    """Find a careers contact for each employer behind the scraped jobs.
+
+    Writes lead-gen/employers.jsonl. Every contact records where it came from and
+    how confident that makes it, because a `careers@` address read off a live
+    careers page and the same string generated from convention are not the same
+    fact — and only one of them is safe to send to unreviewed.
+    """
+    from . import enrich as en
+    from . import generate as gen
+
+    jobs = gen.load_jobs()
+    employers = en.employers_from_jobs(jobs)
+    employers.sort(key=lambda e: -e.open_roles)
+    employers = employers[:limit]
+
+    console.print(f"[bold]Enriching {len(employers)} employer(s)[/bold] "
+                  f"from {len(jobs)} job(s) — MX verification only, no SMTP probing")
+
+    enriched = asyncio.run(en.enrich_all(employers, guess=not no_guess))
+    en.write_employers(enriched)
+
+    table = Table("employer", "roles", "domain", "dom?", "best contact", "conf",
+                  "source", box=None)
+    observed = 0
+    for employer in enriched:
+        contact = employer.best_contact()
+        if contact and contact.source != "rfc2142_guess":
+            observed += 1
+        table.add_row(
+            employer.name[:20], str(employer.open_roles), employer.domain[:24],
+            ("[green]ok" if employer.domain_source == "posting"
+             else "[yellow]guess"),
+            (contact.email[:32] if contact else "—"),
+            (f"{contact.confidence:.2f}" if contact else "—"),
+            (contact.source if contact else "—"),
+        )
+    console.print(table)
+    console.print(
+        f"[green]{observed}[/green] employer(s) with an address actually published "
+        f"on their site; the rest are conventions and are held for review.\n"
+        f"[dim]wrote {config.EMPLOYERS_JSONL.relative_to(config.ROOT)}"
+    )
+
+
+@app.command()
+def outreach(
+    limit: int = typer.Option(20, "--limit", "-n"),
+    min_confidence: float = typer.Option(
+        0.5, "--min-confidence",
+        help="Below this, a contact is held for review rather than queued.",
+    ),
+):
+    """Draft an outreach email per generated package. Sends nothing.
+
+    Each draft is written as a `.eml` you open in your own mail client. Anything
+    the AI could not resolve — a missing contact, a guessed address, a
+    [NEEDS YOUR INPUT] marker — goes to outbound/needs-review/ instead, with the
+    reason recorded.
+    """
+    from . import enrich as en
+    from . import generate as gen
+    from . import outbound as ob
+
+    profile = gen.load_profile()
+    employers = {e.slug: e for e in en.read_employers()}
+    do_not_contact = en.load_do_not_contact()
+
+    from .rank import normalize_company
+
+    items: list[ob.QueueItem] = []
+    for pkg_dir in sorted(d for d in config.OUTPUT.glob("*") if d.is_dir()):
+        pkg_path = pkg_dir / "package.json"
+        email_path = pkg_dir / "outreach-email.md"
+        if not pkg_path.exists():
+            continue
+        pkg = json.loads(pkg_path.read_text(encoding="utf-8"))
+        job = pkg.get("job", {})
+        raw = email_path.read_text(encoding="utf-8") if email_path.exists() else ""
+        subject, body = gen.split_email(raw)
+        answers = (pkg_dir / "answers.md")
+        items.append(ob.build_item(
+            slug=pkg_dir.name,
+            company=job.get("company", ""),
+            role=job.get("title", ""),
+            apply_url=job.get("apply_url", ""),
+            subject=subject, body=body,
+            employer=employers.get(normalize_company(job.get("company", ""))),
+            package_dir=pkg_dir,
+            answers_text=answers.read_text(encoding="utf-8") if answers.exists() else "",
+            do_not_contact=do_not_contact,
+            min_confidence=min_confidence,
+        ))
+        if len(items) >= limit:
+            break
+
+    if not items:
+        console.print("[yellow]no packages found — run `jobapp generate` first")
+        raise typer.Exit(1)
+
+    result = ob.queue_items(items, profile.contact.name, profile.contact.email)
+
+    table = Table("status", "company", "role", "to", "why", box=None)
+    for item in items:
+        colour = "green" if item.status == "ready" else "yellow"
+        table.add_row(
+            f"[{colour}]{item.status}[/{colour}]", item.company[:20], item.role[:34],
+            item.to_email[:28] or "—",
+            ", ".join(item.blockers)[:40] or "",
+        )
+    console.print(table)
+    console.print(
+        f"[green]{result['ready']} draft(s)[/green] in outbound/drafts/, "
+        f"[yellow]{result['needs_review']}[/yellow] held in "
+        f"{config.NEEDS_REVIEW_DIR.relative_to(config.ROOT)}/\n"
+        f"[dim]Nothing was sent. Open a .eml in your mail client, attach the "
+        f"listed files, and send it yourself."
+    )
+
+
+@app.command("export")
+def export_snapshot(
+    out: Path = typer.Option(
+        None, "--out", "-o",
+        help="Destination directory. Defaults to exports/<timestamp>/.",
+    ),
+    label: str = typer.Option(
+        "", "--label", "-l",
+        help="Tag the snapshot, e.g. --label floor-25k. Recorded in the manifest.",
+    ),
+    segment: str = typer.Option(
+        None, "--segment", help="Export only one segment, e.g. --segment kenya."
+    ),
+    jobs_only: bool = typer.Option(
+        False, "--jobs-only", help="Skip employers and the outbound queue."
+    ),
+):
+    """Snapshot the current queue before re-scraping with different parameters.
+
+    `scrape` rewrites lead-gen/jobs.jsonl in place, so a second run with a
+    different floor or a different source set destroys the queue you were working
+    from — and with it any ability to compare the two. This copies the current
+    state somewhere durable first, in both JSONL (exact, re-importable) and CSV
+    (openable in a spreadsheet), alongside the settings that produced it.
+    """
+    import csv as csvmod
+    import shutil
+    from datetime import datetime
+
+    from . import generate as gen
+
+    if not config.JOBS_JSONL.exists():
+        console.print("[red]no lead-gen/jobs.jsonl — run `jobapp scrape` first")
+        raise typer.Exit(1)
+
+    stamp = datetime.now().strftime("%Y-%m-%d-%H%M")
+    name = f"{stamp}-{label}" if label else stamp
+    dest = Path(out) if out else (config.ROOT / "exports" / name)
+    dest.mkdir(parents=True, exist_ok=True)
+
+    jobs = gen.load_jobs()
+    if segment:
+        jobs = [j for j in jobs if j.segment == segment]
+        if not jobs:
+            console.print(f"[yellow]no jobs in segment {segment!r}")
+            raise typer.Exit(1)
+
+    # JSONL: lossless, and can be dropped straight back into lead-gen/ later.
+    with (dest / "jobs.jsonl").open("w", encoding="utf-8") as handle:
+        for job in jobs:
+            handle.write(job.model_dump_json() + "\n")
+
+    # CSV: the format you can actually sort and annotate. The description is left
+    # out — it is thousands of characters and makes the sheet unreadable.
+    columns = [
+        "fit_score", "pay_score", "skill_score", "segment", "company", "title",
+        "salary_usd_estimate", "salary_currency", "salary_explicit",
+        "remote_scope", "location", "source", "posted_at", "apply_url",
+        "pay_rationale", "skill_rationale",
+    ]
+    with (dest / "jobs.csv").open("w", newline="", encoding="utf-8") as handle:
+        writer = csvmod.DictWriter(handle, fieldnames=columns, extrasaction="ignore")
+        writer.writeheader()
+        for job in jobs:
+            row = job.model_dump()
+            row["pay_rationale"] = " | ".join(row.get("pay_rationale") or [])
+            row["skill_rationale"] = " | ".join(row.get("skill_rationale") or [])
+            writer.writerow({c: row.get(c, "") for c in columns})
+
+    copied = ["jobs.jsonl", "jobs.csv"]
+
+    # The settings that produced this queue. Without them a snapshot is a list of
+    # jobs with no way to know what question it answered.
+    for source_file in (config.PREFERENCES_YAML, config.IEP_YAML,
+                        config.COMPANIES_YAML):
+        if source_file.exists():
+            shutil.copy2(source_file, dest / source_file.name)
+            copied.append(source_file.name)
+
+    if not jobs_only:
+        for source_file in (config.EMPLOYERS_JSONL, config.MANIFEST_CSV,
+                            config.QUEUE_JSONL):
+            if source_file.exists():
+                shutil.copy2(source_file, dest / source_file.name)
+                copied.append(source_file.name)
+
+    from collections import Counter
+
+    segments = Counter(j.segment or "-" for j in jobs)
+    with_salary = sum(1 for j in jobs if j.salary_usd_estimate)
+    summary = {
+        "exported_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "label": label,
+        "jobs": len(jobs),
+        "segments": dict(segments),
+        "with_stated_salary": with_salary,
+        "salary_floor_usd": _load_prefs().salary.floor_usd,
+        "sources": dict(Counter(j.source for j in jobs)),
+        "files": copied,
+    }
+    (dest / "snapshot.json").write_text(
+        json.dumps(summary, indent=2), encoding="utf-8"
+    )
+
+    console.print(f"[green]exported {len(jobs)} job(s)[/green] to "
+                  f"{dest.relative_to(config.ROOT) if dest.is_relative_to(config.ROOT) else dest}")
+    table = Table("file", "what", box=None)
+    for item in copied + ["snapshot.json"]:
+        table.add_row(item, {
+            "jobs.jsonl": "lossless — copy back to lead-gen/ to restore",
+            "jobs.csv": "spreadsheet view, descriptions omitted",
+            "preferences.yaml": "the filters that produced this queue",
+            "iep.yaml": "employer profile in force",
+            "companies.yaml": "ATS board tokens in force",
+            "employers.jsonl": "contacts found for these employers",
+            "manifest.csv": "application tracker, with your applied_on column",
+            "queue.jsonl": "drafted outreach",
+            "snapshot.json": "counts and settings, for comparing runs",
+        }.get(item, ""))
+    console.print(table)
+    console.print(f"[dim]segments: {dict(segments)} · {with_salary} with stated salary\n"
+                  f"[dim]Now edit preferences.yaml and re-run `jobapp scrape`; "
+                  f"restore with `cp {dest.name}/jobs.jsonl lead-gen/`")
+
+
 @app.command()
 def run(limit: int = typer.Option(10, "--limit", "-n")):
     """scrape + generate."""
-    scrape(source=None, verify_boards=False)
-    generate(limit=limit, persona="senior-tech-recruiter")
+    _scrape()
+    _generate(limit=limit)
 
 
 # --- status ------------------------------------------------------------------
@@ -371,8 +754,13 @@ def status():
         table.add_row("output", "[red]no packages — run `jobapp generate`")
 
     if config.MANIFEST_CSV.exists():
-        rows = config.MANIFEST_CSV.read_text().splitlines()[1:]
-        applied = sum(1 for r in rows if r.split(",")[-2:-1] not in ([], [""]))
+        # Parsed properly, not by splitting on commas: job titles routinely contain
+        # them ("Software Engineer, Payments"), which shifted every column and made
+        # the applied count meaningless.
+        from . import generate as gen
+
+        rows = gen.read_manifest()
+        applied = sum(1 for r in rows.values() if (r.get("applied_on") or "").strip())
         table.add_row("outbound", f"{len(rows)} queued, {applied} marked applied "
                                   f"(manual by design)")
     else:
@@ -391,7 +779,12 @@ def status():
 
 @app.command()
 def web(
-    host: str = typer.Option("0.0.0.0", "--host", help="Bind address."),
+    host: str = typer.Option(
+        "127.0.0.1", "--host",
+        help="Bind address. Defaults to localhost: the UI serves your CV, phone "
+             "number and full application history, and has no authentication. "
+             "Pass --host 0.0.0.0 only if you intend to expose it.",
+    ),
     port: int = typer.Option(8000, "--port", help="Port to serve on."),
 ):
     """Start the Apple-styled web UI."""
