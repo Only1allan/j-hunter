@@ -117,6 +117,18 @@ def parse_contact(soup: BeautifulSoup) -> Contact:
     if m:
         email = m.group(0)
 
+    # Phone. Every application form asks for one, and without it `apply.py` flags
+    # the field as needing input on every single application. Kenyan numbers are
+    # written "+254 7xx xxx xxx" or "07xx xxx xxx"; the pattern is deliberately
+    # loose about separators and strict about digit count so it does not match a
+    # postcode or a year.
+    phone = ""
+    for candidate in re.finditer(r"\+?\d[\d\s().\-]{7,}\d", raw):
+        text = candidate.group(0).strip()
+        if sum(c.isdigit() for c in text) >= 9:
+            phone = re.sub(r"[\s.\-()]+", " ", text).strip()
+            break
+
     links = {"linkedin": "", "github": "", "website": ""}
     for a in (contact_el.find_all("a") if contact_el else []):
         href = a.get("href", "")
@@ -127,17 +139,26 @@ def parse_contact(soup: BeautifulSoup) -> Contact:
         elif href.startswith("http"):
             links["website"] = href
 
-    # Location is the pipe-delimited field that is neither the email nor a URL.
+    # Location is the pipe-delimited field that is neither the email, the phone,
+    # nor a URL. The phone check matters: it usually comes first in the contact
+    # line, and without excluding it the phone number becomes the "location" and
+    # ends up on every tailored resume.
     location = ""
     for chunk in re.split(r"\s*\|\s*", raw):
         chunk = chunk.strip()
-        if chunk and chunk != email and "linkedin" not in chunk and "github" not in chunk:
-            location = chunk
-            break
+        if not chunk or chunk == email or (phone and phone in chunk):
+            continue
+        if "linkedin" in chunk or "github" in chunk or chunk.startswith("http"):
+            continue
+        if sum(c.isdigit() for c in chunk) >= 7:  # another phone-shaped field
+            continue
+        location = chunk
+        break
 
     return Contact(
         name=name,
         email=email,
+        phone=phone,
         location=location,
         linkedin=links["linkedin"],
         github=links["github"],

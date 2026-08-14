@@ -15,16 +15,29 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
 import re
 from dataclasses import dataclass, field
 from typing import Protocol, TypeVar
 
 import httpx
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from . import config
 
 T = TypeVar("T", bound=BaseModel)
+
+# Transient failures. Everything else (401 bad key, 400 bad model) is permanent and
+# retrying it only wastes time.
+RETRYABLE_STATUS = frozenset({408, 409, 429, 500, 502, 503, 504})
+RETRY_ATTEMPTS = 5
+RETRY_BASE_DELAY = 2.0
+RETRY_MAX_DELAY = 60.0
+
+# Attempts to get a schema-valid response. Separate from transport retries above:
+# this provider has no native structured-output mode, so schema conformance is a
+# prompting outcome and occasionally needs a second try.
+SCHEMA_ATTEMPTS = 3
 
 
 class RefusalError(RuntimeError):
@@ -107,6 +120,8 @@ class SiliconFlowClient:
         self.usage = Usage()
         self._sem = None
         self._sem_loop = None
+        self._http: httpx.AsyncClient | None = None
+        self._http_loop = None
 
     async def _chat(
         self, *, stable_system: str | list[str], user: str,
@@ -145,12 +160,7 @@ class SiliconFlowClient:
         }
 
         async with self._sem:
-            async with httpx.AsyncClient(timeout=300.0) as client:
-                resp = await client.post(
-                    f"{self._base}/chat/completions",
-                    headers=self._headers,
-                    json=body,
-                )
+            resp = await self._post_with_retry(body)
 
         if resp.status_code != 200:
             raise RuntimeError(
@@ -181,6 +191,70 @@ class SiliconFlowClient:
             raise RefusalError("SiliconFlow content filter triggered")
 
         return data
+
+    async def _client(self) -> httpx.AsyncClient:
+        """One client for the process, not one per request.
+
+        A fresh `AsyncClient` per call throws away the connection pool and repeats
+        the TLS handshake on every one of the ~100 calls a generate run makes.
+        """
+        loop = asyncio.get_running_loop()
+        if self._http is None or self._http_loop is not loop:
+            self._http = httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=15.0))
+            self._http_loop = loop
+        return self._http
+
+    async def _post_with_retry(self, body: dict) -> httpx.Response:
+        """POST with backoff on the failures that are worth retrying.
+
+        Rate limits and 5xx are transient and extremely common when a scoring pass
+        fires dozens of concurrent requests; without this, one 429 aborts the job
+        and discards every completed call in that `gather`. 4xx other than 429 are
+        permanent (bad key, bad model name) and fail immediately — retrying them
+        just burns time and money.
+        """
+        client = await self._client()
+        delay = RETRY_BASE_DELAY
+        last_error: Exception | None = None
+
+        for attempt in range(RETRY_ATTEMPTS):
+            try:
+                resp = await client.post(
+                    f"{self._base}/chat/completions",
+                    headers=self._headers,
+                    json=body,
+                )
+            except (httpx.TimeoutException, httpx.TransportError) as exc:
+                last_error = exc
+            else:
+                if resp.status_code not in RETRYABLE_STATUS:
+                    return resp
+                last_error = RuntimeError(
+                    f"SiliconFlow API error {resp.status_code}: {resp.text[:200]}"
+                )
+                # The server's own guidance beats our backoff curve when present.
+                retry_after = resp.headers.get("Retry-After")
+                if retry_after:
+                    try:
+                        delay = min(float(retry_after), RETRY_MAX_DELAY)
+                    except ValueError:
+                        pass
+
+            if attempt == RETRY_ATTEMPTS - 1:
+                break
+            # Jitter matters: without it, N concurrent workers that were rate
+            # limited together retry together and get rate limited together again.
+            await asyncio.sleep(delay * (0.5 + random.random()))
+            delay = min(delay * 2, RETRY_MAX_DELAY)
+
+        raise RuntimeError(
+            f"SiliconFlow request failed after {RETRY_ATTEMPTS} attempts: {last_error}"
+        )
+
+    async def aclose(self) -> None:
+        if self._http is not None:
+            await self._http.aclose()
+            self._http = None
 
     @staticmethod
     def _extract_json(content: str) -> dict:
@@ -227,16 +301,47 @@ class SiliconFlowClient:
         schema: type[T],
         max_tokens: int | None = None,
     ) -> T:
-        """Structured extraction via prompt-based JSON + Pydantic validation."""
+        """Structured extraction via prompt-based JSON + Pydantic validation.
+
+        Retries on a malformed or incomplete response, showing the model what was
+        wrong. This provider has no native structured-output mode — the schema is
+        prompted, not enforced — so an occasional response with a required field
+        missing is expected rather than exceptional. Without the retry, one such
+        response discards the whole package (and the six calls already spent on
+        it), which is exactly what happened to the only job that cleared the
+        match threshold on a live run.
+        """
         json_schema = schema.model_json_schema()
-        data = await self._chat(
-            stable_system=stable_system, user=user,
-            max_tokens=max_tokens or config.MAX_TOKENS,
-            json_schema=json_schema,
+        attempt_user = user
+        last_error: Exception | None = None
+
+        for attempt in range(SCHEMA_ATTEMPTS):
+            data = await self._chat(
+                stable_system=stable_system, user=attempt_user,
+                max_tokens=max_tokens or config.MAX_TOKENS,
+                json_schema=json_schema,
+            )
+            content = data["choices"][0]["message"]["content"]
+            try:
+                return schema.model_validate(self._extract_json(content))
+            except (ValidationError, RuntimeError) as exc:
+                last_error = exc
+                if attempt == SCHEMA_ATTEMPTS - 1:
+                    break
+                # Feed the failure back. Naming the missing fields explicitly is
+                # far more effective than simply asking again.
+                attempt_user = (
+                    f"{user}\n\n# PREVIOUS ATTEMPT WAS REJECTED\n"
+                    f"Your last response did not satisfy the schema:\n\n"
+                    f"{str(exc)[:800]}\n\n"
+                    f"Return the COMPLETE JSON object with every required field "
+                    f"present. Output only the JSON — no prose, no code fences."
+                )
+
+        raise RuntimeError(
+            f"{schema.__name__} could not be extracted after {SCHEMA_ATTEMPTS} "
+            f"attempts: {last_error}"
         )
-        content = data["choices"][0]["message"]["content"]
-        parsed = self._extract_json(content)
-        return schema.model_validate(parsed)
 
 
 def get_client() -> LLMClient:

@@ -1,50 +1,103 @@
 # Target companies, keyed by the ATS hosting their public job board.
 #
-# The value is the board token — the last path segment of the public board URL:
-#   https://boards.greenhouse.io/<token>   -> greenhouse
-#   https://jobs.lever.co/<token>          -> lever
+# Maintained by `jobapp discover-boards --write`, which probes every
+# supported ATS for each name in seed-companies.yaml and keeps only the
+# boards that actually answered. Hand edits are preserved on merge.
 #
-# Every token below was verified live against the board API; the number in the
-# comment is the posting count at the time of verification. Tokens change and
-# companies migrate between ATSs (Notion, Ramp, Retool, Deel, Zapier, HashiCorp
-# and Supabase all 404 on Greenhouse now — they've moved to Ashby or elsewhere),
-# so sources.py treats a dead board as "skip with a warning", never an error.
-#
-# Curating this list is the highest-leverage tuning in the whole pipeline: it
-# decides which companies you apply to at all. Bias here is toward employers
-# that hire globally and pay at USD rates.
+# Curating this list is the highest-leverage tuning in the pipeline: it
+# decides which companies you apply to at all.
 
+ashby:
+- alan
+- andela
+- baseten
+- bitvavo
+- buffer
+- cohere
+- deepl
+- langchain
+- linear
+- m-kopa
+- miro
+- modal
+- mollie
+- notion
+- openai
+- oyster
+- pennylane
+- pinecone
+- plaid
+- railway
+- ramp
+- render
+- supabase
+- supercell
+- zapier
 greenhouse:
-  # Data / infra / platform — closest to the CV's cloud-architecture positioning
-  - databricks            # ~801
-  - mongodb               # ~414
-  - cloudflare            # ~307
-  - elastic               # ~256
-  - clickhouse            # ~178
-  - grafanalabs           # ~146
-  - temporaltechnologies  # ~55
-  - planetscale           # ~9
-  # AI / ML
-  - anthropic             # ~413
-  - scaleai               # ~213
-  # Security
-  - chainguard            # ~82
-  - tailscale             # ~57
-  # Fintech / product
-  - stripe                # ~563
-  - brex                  # ~284
-  - figma                 # ~158
-  - vercel                # ~83
-  # Remote-first / global employers-of-record
-  - remotecom             # ~224  (Remote.com)
-  - gitlab                # ~197  all-remote
-  - canonical             # ~303  all-remote, hires globally
-  - turing                # ~23
-
+- adyen
+- anthropic
+- branch
+- brex
+- canonical
+- celonis
+- chainguard
+- clickhouse
+- cloudflare
+- contentful
+- databricks
+- datadog
+- doctolib
+- elastic
+- feedzai
+- figma
+- getyourguide
+- gitlab
+- grafanalabs
+- hellofresh
+- hextechnologies
+- jumia
+- luno
+- mongodb
+- moniepoint
+- monzo
+- n26
+- oneacrefund
+- ozow
+- planetscale
+- remote
+- remotecom
+- scaleai
+- stripe
+- sumup
+- swordhealth
+- tailscale
+- temporaltechnologies
+- togetherai
+- traderepublic
+- turing
+- vercel
+- wise
+- wolt
 lever:
-  - veeva                 # ~825
-  - binance               # ~269
-  - spotify               # ~101
-  - payjoy                # ~62
-  - swordhealth           # ~23
-  - tala                  # ~11   operates in Kenya
+- apolloagriculture
+- binance
+- copia
+- mamamoney
+- neon
+- payjoy
+- qonto
+- spotify
+- swordhealth
+- tala
+- veeva
+recruitee:
+- gro
+- personio
+smartrecruiters:
+- burnmanufacturing
+- deliveryhero
+- picnic
+- yassir
+workable:
+- huggingface
+- kuda

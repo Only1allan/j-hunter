@@ -1,0 +1,84 @@
+# Ideal Employer Profile.
+#
+# `preferences.yaml` describes the JOB you want. This file describes the
+# EMPLOYER — who is worth applying to at all, and how much a lead is worth given
+# where you are and where you would move. Hand-edited; nothing writes to it.
+#
+# The candidate is based in Nairobi, senior, and open to relocation. That makes
+# three quite different kinds of lead all valid, and they are not interchangeable:
+# a remote-worldwide role pays USD with no visa; a Nairobi role pays local rates
+# with no friction; a European role pays well but only if the employer sponsors.
+
+candidate:
+  base: Nairobi, Kenya
+  timezone: EAT (UTC+3)
+  open_to_relocation: true
+  needs_sponsorship_outside: [KE]
+
+# How much a lead is worth by where the work is. Applied as a ranking weight,
+# never as a filter — a hard filter here would silently discard whole markets.
+regions:
+  worldwide:
+    weight: 1.0
+    why: Remote-worldwide at USD rates. No visa, no move, best pay per unit of friction.
+  emea:
+    weight: 0.9
+    why: Overlapping timezone, often open to Kenya without relocation.
+  europe:
+    weight: 0.8
+    why: Strong pay and real relocation routes, but usually needs sponsorship.
+  africa:
+    weight: 0.7
+    why: Includes Nairobi itself and pan-African employers paying above local market.
+  americas:
+    weight: 0.5
+    why: Timezone-hostile from EAT and usually US-work-authorisation-only.
+  region_locked:
+    weight: 0.3
+  onsite:
+    weight: 0.0
+    why: Not viable without a move already agreed.
+
+# What makes an employer a good target regardless of the individual posting.
+employer_signals:
+  hires_globally:
+    weight: 20
+    why: A track record of employing people outside their own country.
+  pays_usd_rates:
+    weight: 18
+    why: Pays by role, not by the candidate's local market.
+  sponsors_visas:
+    weight: 15
+    why: The only thing that makes a European role actually reachable.
+  remote_first:
+    weight: 12
+  public_engineering_culture:
+    weight: 8
+    why: Public repos and engineering blogs give a way in that is not an application.
+  east_africa_presence:
+    weight: 10
+    why: Already hires in Nairobi, so no visa question at all.
+
+# Free, official registers of employers licensed to sponsor work visas. These are
+# the highest-value employer-level signal for this candidate, because they turn
+# "this job is in Europe" into "this employer can actually hire me".
+sponsor_registers:
+  uk:
+    name: UK Home Office register of licensed sponsors (Workers)
+    url: https://www.gov.uk/government/publications/register-of-licensed-sponsors-workers
+    format: CSV
+  netherlands:
+    name: IND public register of recognised sponsors (Labour)
+    url: https://ind.nl/en/public-register-recognised-sponsors/public-register-work
+    format: HTML/PDF
+
+# Employers to never generate applications for, whatever they post.
+exclude_employers:
+  - staffing agency
+  - recruitment agency
+  - body shop
+  - unpaid internship
+
+# Minimum posting count for an employer to be worth enriching. One stale listing
+# is usually a board that was never taken down.
+min_open_roles: 1

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -345,6 +346,18 @@ def write_pdf(html: str, path: Path) -> int | None:
     return pdf_pages(path)
 
 
+async def write_pdf_async(html: str, path: Path) -> int | None:
+    """`write_pdf` off the event loop.
+
+    weasyprint rendering and the `pdfinfo` subprocess are both blocking and take
+    on the order of a second each. Called directly from a coroutine they stall
+    every other package being built concurrently, which turns a parallel build
+    into a serial one. Packages are rendered under `asyncio.gather`, so this
+    matters at exactly the point where it is least visible.
+    """
+    return await asyncio.to_thread(write_pdf, html, path)
+
+
 def trim_for_one_page(tailored: TailoredResume) -> bool:
     """Deterministically shed content. Returns False when nothing is left to cut.
 
@@ -406,6 +419,35 @@ project that would demonstrate it, and roughly how long it should take. Prefer \
 building something over consuming a course. Be honest about which gaps are \
 closable in weeks and which are not. Output markdown, no preamble."""
 
+OUTREACH_EMAIL_SYSTEM = """You write a short cold email to someone at the company \
+about a specific open role. This is NOT the cover letter — it is the message that \
+gets the cover letter read.
+
+Output format, exactly:
+
+    Subject: <subject line>
+
+    <body>
+
+Rules:
+- 120 words maximum for the body. Four short paragraphs at most, and one of them \
+should be a single sentence.
+- The subject line names the role and one concrete, specific thing. Never \
+"Application for X" and never anything that reads as a mail-merge.
+- Open with the reason you are writing to THIS company — something real about \
+what they build or a problem they have. Not "I came across your posting".
+- One piece of evidence from the candidate's actual experience, with the number or \
+the system named. One only. The cover letter carries the rest.
+- One clear, small ask. "Worth a short conversation?" beats "I would welcome the \
+opportunity to discuss how my skills align".
+- No attachment talk, no "please find enclosed", no "I hope this email finds you \
+well", no "reaching out", no "circling back", no "leverage", no "passionate".
+- If the recipient is a named person, address them by first name. If it is a role \
+inbox like careers@, open without a salutation to a person.
+- Every factual claim must exist in the profile or project evidence. Invent nothing.
+
+Write it so that a busy engineer reading on a phone gets the point in five seconds."""
+
 ANSWERS_SYSTEM = """You draft answers to the questions job applications actually \
 ask, so the candidate can paste rather than rewrite them each time.
 
@@ -431,8 +473,9 @@ are what tells the candidate where to intervene."""
 
 
 async def supporting_docs(client, job: Job, match: MatchScore, profile_text: str,
-                          projects_text: str, voice: str) -> dict[str, str]:
-    """Cover letter, post, study plan, and stock answers, generated concurrently."""
+                          projects_text: str, voice: str,
+                          contact_note: str = "") -> dict[str, str]:
+    """Cover letter, post, study plan, answers and outreach email, concurrently."""
     voice_block = (
         f"# WRITING SAMPLES (voice reference only — never quote)\n\n{voice}" if voice else ""
     )
@@ -450,18 +493,38 @@ async def supporting_docs(client, job: Job, match: MatchScore, profile_text: str
             max_tokens=tokens,
         )
 
-    letter, post, study, answers = await asyncio.gather(
+    letter, post, study, answers, email = await asyncio.gather(
         one(COVER_SYSTEM, "Write the cover letter."),
         one(POST_SYSTEM, "Write the outreach post.", 2000),
         one(STUDY_SYSTEM, "Write the upskilling plan for the gaps above."),
         one(ANSWERS_SYSTEM, "Draft the application answers.", 5000),
+        one(OUTREACH_EMAIL_SYSTEM,
+            f"Write the outreach email.{contact_note}", 2000),
     )
     return {
         "cover-letter.md": letter,
         "post.md": post,
         "study-plan.md": study,
         "answers.md": answers,
+        "outreach-email.md": email,
     }
+
+
+SUBJECT_RE = re.compile(r"^\s*subject\s*:\s*(.+)$", re.I | re.M)
+
+
+def split_email(text: str) -> tuple[str, str]:
+    """Separate the generated email into (subject, body).
+
+    The model is asked for a `Subject:` line; if it omits one, the email still has
+    to be usable, so a subject is derived rather than left blank.
+    """
+    match = SUBJECT_RE.search(text or "")
+    if not match:
+        return "", (text or "").strip()
+    subject = match.group(1).strip()
+    body = (text[:match.start()] + text[match.end():]).strip()
+    return subject, body
 
 
 COVER_LETTER_CSS = """
@@ -561,7 +624,9 @@ async def score_pool(client, jobs: list[Job], profile: Profile, persona: str,
 
 async def build_package(client, job: Job, match: MatchScore, projects_text: str,
                         profile: Profile, template_html: str, voice: str,
-                        threshold: int = config.MATCH_THRESHOLD) -> ApplicationPackage:
+                        threshold: int = config.MATCH_THRESHOLD,
+                        employer=None, languages: list[str] | None = None,
+                        research_contributions: bool = True) -> ApplicationPackage:
     """Phase two: tailor, render, and write one job's folder for an already-scored job."""
     profile_text = profile_context(profile)
     out_dir = config.OUTPUT / job.slug()
@@ -579,7 +644,7 @@ async def build_package(client, job: Job, match: MatchScore, projects_text: str,
 
     tailored = await tailor(client, job, match, profile_text, projects_text)
     html = render_resume(profile, tailored, template_html)
-    pages = write_pdf(html, out_dir / "resume.pdf")
+    pages = await write_pdf_async(html, out_dir / "resume.pdf")
 
     # One retry with an explicit brevity instruction, then deterministic trimming.
     if pages and pages > 1:
@@ -588,21 +653,62 @@ async def build_package(client, job: Job, match: MatchScore, projects_text: str,
             client, job, match, profile_text, projects_text, brevity=1
         )
         html = render_resume(profile, tailored, template_html)
-        pages = write_pdf(html, out_dir / "resume.pdf")
+        pages = await write_pdf_async(html, out_dir / "resume.pdf")
 
     attempts = 0
     while pages and pages > 1 and attempts < 10:
         if not trim_for_one_page(tailored):
             break
         html = render_resume(profile, tailored, template_html)
-        pages = write_pdf(html, out_dir / "resume.pdf")
+        pages = await write_pdf_async(html, out_dir / "resume.pdf")
         attempts += 1
     if attempts:
         notes.append(f"trimmed {attempts} item(s) to reach one page")
 
     (out_dir / "resume.html").write_text(html, encoding="utf-8")
 
-    docs = await supporting_docs(client, job, match, profile_text, projects_text, voice)
+    # Tell the email writer who it is addressing. A named recruiter and a
+    # careers@ inbox call for different openings, and the model cannot know which
+    # it has unless it is told.
+    contact = employer.best_contact() if employer is not None else None
+    if contact and contact.kind == "person" and contact.name:
+        contact_note = (
+            f"\n\nThe recipient is {contact.name}"
+            + (f", {contact.title}" if contact.title else "")
+            + " — address them by first name."
+        )
+    elif contact:
+        contact_note = (
+            f"\n\nThe recipient is the role inbox {contact.email} — no personal "
+            "salutation."
+        )
+    else:
+        contact_note = (
+            "\n\nNo contact address is known; write it so it works either as an "
+            "email or as a LinkedIn message."
+        )
+
+    docs = await supporting_docs(
+        client, job, match, profile_text, projects_text, voice, contact_note
+    )
+
+    # Open-source work at this employer, researched in parallel with nothing else
+    # depending on it — a GitHub failure must not cost the package.
+    if research_contributions:
+        from . import contribute
+
+        try:
+            research = await contribute.research_employer(
+                job.company,
+                languages or contribute.languages_from_profile(profile),
+                github_org=getattr(employer, "github_org", "") or "",
+            )
+            docs["contributions.md"] = contribute.render_markdown(job.company, research)
+            if not research.get("org"):
+                notes.append("no public GitHub org found")
+        except Exception as exc:
+            notes.append(f"contribution research failed: {type(exc).__name__}")
+
     artifacts = {"resume.html": "resume.html", "resume.pdf": "resume.pdf"}
     for name, text in docs.items():
         clean, hits = config.scrub(text)
@@ -611,7 +717,7 @@ async def build_package(client, job: Job, match: MatchScore, projects_text: str,
         (out_dir / name).write_text(clean, encoding="utf-8")
         artifacts[name] = name
 
-    letter_pages = write_pdf(
+    letter_pages = await write_pdf_async(
         cover_letter_html(profile, job, docs["cover-letter.md"]),
         out_dir / "cover-letter.pdf",
     )
@@ -638,28 +744,79 @@ async def build_package(client, job: Job, match: MatchScore, projects_text: str,
     return package
 
 
+MANIFEST_COLUMNS = [
+    "company", "role", "apply_url", "match_score", "pay_score",
+    "salary_usd_est", "remote_scope", "resume_pages", "package_dir",
+    "applied_on", "response",
+]
+
+# Columns the human owns. Regeneration refreshes everything else, but must never
+# touch these — they are the only record that an application was actually sent.
+HUMAN_OWNED_COLUMNS = ("applied_on", "response")
+
+
+def read_manifest() -> dict[str, dict]:
+    """Existing manifest rows, keyed by package_dir. Empty if there is none."""
+    import csv
+
+    if not config.MANIFEST_CSV.exists():
+        return {}
+    with config.MANIFEST_CSV.open(encoding="utf-8", newline="") as handle:
+        return {
+            row["package_dir"]: row
+            for row in csv.DictReader(handle)
+            if row.get("package_dir")
+        }
+
+
 def write_manifest(packages: list[ApplicationPackage]) -> None:
-    """The outbound queue. No code sends anything; this is what you work through."""
+    """The outbound queue. No code sends anything; this is what you work through.
+
+    Merges rather than overwrites. `generate` is re-run constantly, and the
+    previous implementation rewrote this file from scratch every time — silently
+    erasing the `applied_on` and `response` columns the user had filled in by hand,
+    along with every row for a package that wasn't in the current batch. Losing the
+    record of what you already applied to is worse than any ranking bug: it causes
+    duplicate applications to the same employer.
+    """
     import csv
 
     config.OUTBOUND.mkdir(parents=True, exist_ok=True)
+    existing = read_manifest()
+
     generated = [p for p in packages if p.status != "skipped_low_score"]
     generated.sort(key=lambda p: (-p.match.score, -p.job.pay_score))
 
+    merged: dict[str, dict] = dict(existing)
+    for pkg in generated:
+        previous = existing.get(pkg.dir, {})
+        row = {
+            "company": pkg.job.company,
+            "role": pkg.job.title,
+            "apply_url": pkg.job.apply_url,
+            "match_score": pkg.match.score,
+            "pay_score": pkg.job.pay_score,
+            "salary_usd_est": pkg.job.salary_usd_estimate or "",
+            "remote_scope": pkg.job.remote_scope,
+            "resume_pages": pkg.resume_pages or "",
+            "package_dir": pkg.dir,
+        }
+        for column in HUMAN_OWNED_COLUMNS:
+            row[column] = previous.get(column, "")
+        merged[pkg.dir] = row
+
+    def sort_key(row: dict) -> tuple:
+        try:
+            return (-int(row.get("match_score") or 0), -int(row.get("pay_score") or 0))
+        except (TypeError, ValueError):
+            return (0, 0)
+
     with config.MANIFEST_CSV.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle)
-        writer.writerow([
-            "company", "role", "apply_url", "match_score", "pay_score",
-            "salary_usd_est", "remote_scope", "resume_pages", "package_dir",
-            "applied_on", "response",
-        ])
-        for pkg in generated:
-            writer.writerow([
-                pkg.job.company, pkg.job.title, pkg.job.apply_url,
-                pkg.match.score, pkg.job.pay_score,
-                pkg.job.salary_usd_estimate or "", pkg.job.remote_scope,
-                pkg.resume_pages or "", pkg.dir, "", "",
-            ])
+        writer = csv.DictWriter(handle, fieldnames=MANIFEST_COLUMNS,
+                                extrasaction="ignore")
+        writer.writeheader()
+        for row in sorted(merged.values(), key=sort_key):
+            writer.writerow({c: row.get(c, "") for c in MANIFEST_COLUMNS})
 
 
 def load_jobs() -> list[Job]:
