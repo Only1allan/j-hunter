@@ -1,0 +1,178 @@
+# Employers to probe with `jobapp discover-boards`.
+#
+# This file is INPUT, not output. It lists company *names*; the discovery command
+# works out which applicant tracking system each one publishes on and writes the
+# verified board tokens into companies.yaml. Nothing here is assumed to be
+# reachable — a name that resolves to no board is simply reported and skipped.
+#
+# Grouped by why the employer is on the list, because that is what makes the list
+# maintainable. The candidate is Nairobi-based, senior, open to relocation, so
+# three things qualify an employer: it hires remotely at global rates, it hires in
+# East Africa, or it sponsors relocation into Europe.
+
+# --- Kenya and East Africa ---------------------------------------------------
+# Nairobi's venture-funded tech scene. Most pay above local market and several
+# hire regionally across East Africa.
+east_africa:
+  - M-KOPA
+  - Sama
+  - Twiga Foods
+  - Wasoko
+  - Apollo Agriculture
+  - SunCulture
+  - Kyosk
+  - Ilara Health
+  - Angaza
+  - Copia Global
+  - One Acre Fund
+  - BURN Manufacturing
+  - Komaza
+  - Turaco
+  - Pula
+  - Lami Technologies
+  - 4G Capital
+  - Zanifu
+  - MarketForce
+  - Powered by People
+  - Tala
+  - Branch International
+  - Cellulant
+  - Ushahidi
+  - BRCK
+  - Gro Intelligence
+  - iProcure
+  - Jumba
+  - Amitruck
+  - Sokowatch
+
+# --- Wider Africa ------------------------------------------------------------
+# West and North African companies that hire remotely across the continent, plus
+# the pan-African fintechs that pay in USD.
+africa:
+  - Flutterwave
+  - Paystack
+  - Moniepoint
+  - Kuda
+  - Chipper Cash
+  - Interswitch
+  - Yassir
+  - Jumia
+  - Andela
+  - Instadeep
+  - Carry1st
+  - TeamApt
+  - Bamboo
+  - PiggyVest
+  - Reliance Health
+  - Helium Health
+  - mPharma
+  - Zipline
+  - d.light
+  - Bboxx
+  - Yoco
+  - Ozow
+  - Luno
+  - Takealot
+  - Naked Insurance
+  - Peach Payments
+  - Stitch
+  - Mama Money
+
+# --- Europe: relocation and visa-sponsorship friendly ------------------------
+# European employers with a track record of hiring internationally. Relocation
+# and sponsorship are verified per-posting at rank time, not assumed here.
+europe:
+  - Adyen
+  - Booking.com
+  - Spotify
+  - Klarna
+  - Revolut
+  - Monzo
+  - Wise
+  - N26
+  - Personio
+  - Celonis
+  - DeepL
+  - Hugging Face
+  - Mistral AI
+  - Datadog
+  - Contentful
+  - GetYourGuide
+  - Zalando
+  - Delivery Hero
+  - HelloFresh
+  - Trade Republic
+  - SumUp
+  - Pennylane
+  - Qonto
+  - Alan
+  - Doctolib
+  - Payfit
+  - Sword Health
+  - Unbabel
+  - Feedzai
+  - Remote
+  - Bolt
+  - Wolt
+  - Supercell
+  - Tibber
+  - Kry
+  - Miro
+  - Picnic
+  - Mollie
+  - Bitvavo
+  - Aiven
+
+# --- United States and global remote -----------------------------------------
+# Companies that hire genuinely worldwide, or that pay at USD rates for remote
+# roles. Ashby is over-represented here: many migrated off Greenhouse.
+global_remote:
+  - Anthropic
+  - OpenAI
+  - Stripe
+  - Cloudflare
+  - Databricks
+  - MongoDB
+  - Elastic
+  - ClickHouse
+  - Grafana Labs
+  - Temporal Technologies
+  - Vercel
+  - Supabase
+  - Render
+  - Railway
+  - Neon
+  - PlanetScale
+  - Sourcegraph
+  - Retool
+  - Notion
+  - Figma
+  - Linear
+  - Ramp
+  - Brex
+  - Plaid
+  - Deel
+  - Oyster
+  - Remote.com
+  - Zapier
+  - Automattic
+  - Canonical
+  - GitLab
+  - Doist
+  - Toggl
+  - Buffer
+  - Hotjar
+  - Chainguard
+  - Tailscale
+  - Fly.io
+  - Turing
+  - Scale AI
+  - Hex Technologies
+  - Modal Labs
+  - Replicate
+  - Weights and Biases
+  - LangChain
+  - Pinecone
+  - Cohere
+  - Together AI
+  - Baseten

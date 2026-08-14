@@ -1,0 +1,22 @@
+# Never write to these. Checked before anything reaches the outbound queue.
+#
+# Three reasons an entry lands here, and all of them matter:
+#
+#  1. You already applied and do not want a second, colder touch.
+#  2. They asked you not to contact them. Under GDPR an objection to direct
+#     marketing must be honoured, and under Kenya's Data Protection Act 2019 you
+#     are the data controller for this list — so this file is the mechanism that
+#     makes that obligation real rather than aspirational.
+#  3. The address turned out to be wrong and mail to it reaches a stranger.
+#
+# Matching is case-insensitive. `domains` blocks every address at that domain,
+# `emails` blocks one address, `companies` blocks by employer name.
+
+domains: []
+  # - example.com
+
+emails: []
+  # - careers@example.com
+
+companies: []
+  # - Some Agency Ltd

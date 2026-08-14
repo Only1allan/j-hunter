@@ -2,12 +2,67 @@
 # Consumed as `Preferences` in contracts.py.
 
 salary:
-  floor_usd: 80000
+  # Deliberately low. The floor is a *disqualifier*, not a target: it only drops
+  # a job whose stated pay is below it. Set at 25k it stops excluding Kenyan and
+  # wider African roles (which quote monthly and convert to a lower annual USD
+  # figure) while the ranking still puts the best-paying jobs at the top.
+  floor_usd: 25000
+  # Top of the pay-scoring curve. Pay is scored logarithmically between floor and
+  # ceiling, so $50k, $120k and $300k stay clearly apart. A linear scale from a
+  # 25k floor saturated — everything above $50k scored 100 and the ordering at
+  # the top of the queue became arbitrary.
+  ceiling_usd: 400000
   currency_pref: [USD, EUR, GBP]
   # Most postings don't state pay. Keep this false so unstated-salary jobs are
   # RANKED by proxy signals rather than discarded — a hard filter here throws
   # away the majority of the market. See rank.py.
   require_explicit: false
+
+# What the candidate can actually build with. Drives a deterministic fit score
+# applied to every scraped posting, which is then multiplied into the pay score.
+#
+# The rule this encodes: a well-paid role built in a language the candidate does
+# not write is a WORSE lead than a lower-paid one in a language they do. A $70k
+# Rust role scores below a $50k TypeScript role, because the first is a rejection
+# and the second is an interview.
+#
+# Missing a *core language* (rust, go, c++, c#, ruby...) dominates the score.
+# Missing a framework barely matters — those are learnable in a notice period.
+skills:
+  have:
+    - Python
+    - TypeScript
+    - JavaScript
+    - Java
+    - C
+    - Bash
+    - SQL
+    - React
+    - Next.js
+    - Node.js
+    - FastAPI
+    - GraphQL
+    - REST
+    - AWS
+    - Azure
+    - Terraform
+    - CloudFormation
+    - LangChain
+    - Bedrock
+    - Tailwind
+    - CI/CD
+    - Microservices
+    - Postgres
+    - LLM
+  # Adjacent enough to pick up quickly — a small bonus, never a penalty.
+  learning:
+    - Docker
+    - Kubernetes
+    - GCP
+    - MongoDB
+    - Redis
+  # 1.0 = full penalty for a missing core language. Lower it to widen the net.
+  weight: 1.0
 
 remote:
   required: true
@@ -80,5 +135,56 @@ exclude:
   - support engineer
   - technical support
   - field engineer
+  # Other engineering disciplines. "Engineer" is not a software word, and the
+  # soft title check in rank.py keeps anything matching /engineer/ so that real
+  # titles like "Site Reliability Engineer" survive. On the Kenyan boards that
+  # let manufacturing and construction roles straight through — a MECHANICAL
+  # ENGINEER at a tissue factory reached the shortlist.
+  - mechanical engineer
+  - civil engineer
+  - electrical engineer
+  - chemical engineer
+  - structural engineer
+  - production engineer
+  - industrial engineer
+  - biomedical engineer
+  - mining engineer
+  - agricultural engineer
+  - process engineer
+  - maintenance engineer
+  - hvac
+  - quantity surveyor
+  - site engineer
+  - project engineer
+  - plant engineer
+  - quality assurance engineer-tissues
+  - production manager
 
 target_count: 100
+
+# Reserved slices of the final queue.
+#
+# Without this the queue is one pay-ranked list, and a $300k US remote role beats
+# every job in Nairobi that exists — so the local market vanished from the results
+# entirely (a full run kept 0 of 294 scraped Kenyan jobs). Quotas let the local
+# market be judged on its own terms rather than against Bay Area compensation.
+#
+# Order matters: the catch-all (no match_locations, no match_sources) must be
+# LAST, or it claims everything before the specific segments get a look.
+segments:
+  - name: kenya
+    quota: 20
+    match_locations: [kenya, nairobi, mombasa, kisumu, nakuru, eldoret]
+    match_sources: [fuzu, brightermonday, myjobmag]
+    # Local pay in USD terms. Measuring Kenyan salaries against the global floor
+    # rejected the entire local market before it was ever ranked.
+    salary_floor_usd: 6000
+    # The candidate lives here. An on-site Nairobi role needs no visa and no
+    # relocation, so "not remote" is not a reason to discard it — that rule
+    # exists to filter out roles requiring a move, and this is home.
+    allow_onsite: true
+
+  - name: global
+    quota: 80
+    # Catch-all: everything not claimed above. Keeps the global rules — remote
+    # required, the $25,000 floor.
