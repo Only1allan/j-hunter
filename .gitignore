@@ -53,6 +53,19 @@ lead-gen/jobs.jsonl
 output/*/
 outbound/manifest.csv
 
+# Employer contacts and drafted outreach. Personal data about real people at real
+# companies, plus drafts addressed to them — none of it belongs in a public repo.
+lead-gen/employers.jsonl
+outbound/queue.jsonl
+outbound/drafts/
+outbound/needs-review/
+outbound/sent.jsonl
+
+# Crawlee scratch state
+.crawl-state/
+.crawl-cache/
+storage/
+
 # Keep the folder structure and docs visible even though contents are ignored
 !source-of-truth/index.md
 !source-of-truth/personas/
