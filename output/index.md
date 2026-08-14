@@ -12,6 +12,9 @@ output/
     resume.pdf         weasyprint render — must be exactly 1 A4 page
     cover-letter.md
     cover-letter.pdf
+    outreach-email.md  short cold email with a subject line, addressed to the
+                       contact found by `jobapp enrich`
+    contributions.md   open issues at this employer you could actually fix
     post.md            short outreach / social post
     study-plan.md      upskilling plan built from the match's gap list
     answers.md         pre-drafted answers to common application questions
@@ -23,6 +26,25 @@ output/
 the standard questions (why this company, salary expectation, notice period, work
 authorisation) already drafted in the folder turns applying into copy-paste instead of
 re-reading the listing and re-thinking the same four answers.
+
+## Three ways in, not one
+
+An application submitted through a form is one of several hundred. The other two
+artifacts exist because they are the routes that are not.
+
+`outreach-email.md` is deliberately *not* a shorter cover letter. It has a subject
+line, one concrete hook, one piece of evidence and one small ask, and it is written
+differently depending on whether the recipient is a named recruiter or a
+`careers@` inbox — which it knows because `jobapp enrich` resolved that first. It
+is consumed by `jobapp outreach`, which turns it into a reviewable `.eml` draft.
+
+`contributions.md` lists open issues in the employer's own repositories, filtered to
+the candidate's languages and ranked by evidence that the project actually accepts
+outside contributions — a CONTRIBUTING file, issues labelled for newcomers, recent
+pushes. Archived repositories score zero, because a pull request there can never be
+merged. A merged change reaches the engineers who would interview you, and it
+arrives before the application does; it is the only signal this pipeline produces
+that a recruiter cannot discount.
 
 ## The one-page rule
 

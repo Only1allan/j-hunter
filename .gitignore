@@ -61,10 +61,19 @@ outbound/drafts/
 outbound/needs-review/
 outbound/sent.jsonl
 
+# Queue snapshots from `jobapp export`. Each one carries scraped listings, the
+# employer contacts found for them, and your application tracker — the same
+# personal and third-party data the sources above are ignored for. The point of a
+# snapshot is that it outlives the next scrape, not that it gets published.
+exports/
+
 # Crawlee scratch state
 .crawl-state/
 .crawl-cache/
 storage/
+
+# Generated reference page (rebuildable from the AST at any time)
+.codemap.html
 
 # Keep the folder structure and docs visible even though contents are ignored
 !source-of-truth/index.md
